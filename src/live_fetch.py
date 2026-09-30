@@ -82,7 +82,7 @@ def wind_speed_dir_to_uv(speed_ms, direction_deg):
 
 
 def _fetch_batch(lat_list, lon_list, levels, past_days=2, forecast_days=1,
-                  max_retries=4, initial_backoff_seconds=5):
+                  max_retries=3, initial_backoff_seconds=10):
     """
     Fetch pressure-level variables for a BATCH of lat/lon points in one
     request, using Open-Meteo's comma-separated multi-location support.
