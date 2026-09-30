@@ -1,0 +1,3 @@
+rasterio>=1.3
+richdem>=0.3.4
+affine>=2.4

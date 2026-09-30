@@ -1,0 +1,304 @@
+================================================================================
+            WEATHER NOWCASTING MVP — THUNDERSTORM PREDICTION
+                   PROJECT SUMMARY & FILE INVENTORY
+================================================================================
+
+Project: AI-Driven Severe Weather Nowcasting System (SIH 2026)
+Purpose: Thunderstorm prediction using ERA5 reanalysis data + live Open-Meteo API
+Region:  Tamil Nadu, India (lat 8.0-13.5, lon 76.5-80.5)
+Model:    CNN + LSTM (single hazard: severe-weather / heavy-rainfall proxy)
+Reported AUC-ROC from an earlier run is ~0.88, but it is NOT a final benchmark; retrain with the leakage-safe pipeline before reporting metrics
+
+================================================================================
+                         PROJECT STRUCTURE
+================================================================================
+
+weather-nowcasting/
+├── app.py                          # Streamlit demo dashboard
+├── README.md                       # Project documentation
+├── requirements.txt                # Python dependencies
+├── configs/
+│   ├── __init__.py                 # Package marker (empty)
+│   └── config.py                   # Central configuration (paths, hyperparams)
+├── src/
+│   ├── __init__.py                 # Package marker (empty)
+│   ├── data_loader.py              # ERA5 NetCDF data loading utilities
+│   ├── features.py                 # Atmospheric feature engineering (IWV, shear, etc.)
+│   ├── labels.py                   # Storm labeling from precipitation data
+│   ├── live_fetch.py               # Live atmospheric data from Open-Meteo API
+│   ├── live_log.py                 # CSV logging of live predictions
+│   ├── live_predict_core.py        # Shared live prediction logic
+│   └── model.py                    # CNN + LSTM model architecture
+├── notebooks/
+│   ├── 00_quick_start_synthetic_test.py  # End-to-end test with synthetic data
+│   ├── 01_build_dataset.py              # Full real-data pipeline (load→features→labels→arrays)
+│   ├── 02_train_model.py                # Train MVP model on real data
+│   ├── 03_live_predict.py               # Live prediction script (Open-Meteo)
+│   └── download_era5.py                 # ERA5 data downloader via CDS API
+├── data/
+│   ├── raw/                        # Downloaded ERA5 NetCDF files (28 files)
+│   └── processed/                  # Processed arrays + live prediction log
+│       ├── X.npy                   # Feature array (samples, timesteps, lat, lon, features)
+│       ├── y.npy                   # Binary storm labels
+│       ├── feature_mean.npy        # Normalization stats (mean)
+│       ├── feature_std.npy         # Normalization stats (std)
+│       ├── feature_names.npy       # Feature name list
+│       ├── sample_times.npy        # Timestamp per sample
+│       └── live_predictions_log.csv # Live prediction history
+├── models/
+│   └── thunderstorm_mvp.h5         # Trained Keras model weights
+├── outputs/                        # Plots, predictions, evaluation results
+└── venv/                           # Python virtual environment
+
+================================================================================
+                      DETAILED PROGRAM DESCRIPTIONS
+================================================================================
+
+--------------------------------------------------------------------------------
+1. app.py — Streamlit Demo Dashboard
+--------------------------------------------------------------------------------
+Purpose:    Interactive web dashboard for demo/presentation
+Key funcs:  main(), render_historical_tab(), render_live_tab()
+Features:
+  - Historical test set: pick a date, see model prediction vs actual outcome
+  - Live prediction: fetch current data, get real-time thunderstorm risk
+  - Track record: accumulated live predictions with manual annotation
+  - Quick-jump buttons: "Show correct storm alert", "Show correct quiet day"
+Run with:   streamlit run app.py
+
+--------------------------------------------------------------------------------
+2. configs/config.py — Central Configuration
+--------------------------------------------------------------------------------
+Purpose:    Single source of truth for all project paths and hyperparameters
+Key vars:
+  - Paths: PROJECT_ROOT, DATA_RAW_DIR, DATA_PROCESSED_DIR, MODELS_DIR
+  - Region: REGION_NAME="TamilNadu", LAT 8.0-13.5, LON 76.5-80.5
+  - Model:  SEQUENCE_TIMESTEPS=24, BATCH_SIZE=16, EPOCHS=30, LR=1e-3
+  - Split:  TRAIN=0.70, VAL=0.15, TEST=0.15
+  - Alert:  STORM_PROBABILITY_THRESHOLD=0.15 (tune after retraining)
+
+--------------------------------------------------------------------------------
+3. src/data_loader.py — Data Loading Utilities
+--------------------------------------------------------------------------------
+Purpose:    Load and standardize ERA5 NetCDF files
+Key funcs:
+  - load_imdaa_data(filepath)      → xr.Dataset (single file)
+  - load_multiple_files(dir, pat)  → xr.Dataset (merged files)
+  - subset_region(ds)              → xr.Dataset (cropped to Tamil Nadu)
+  - _standardize_dim_names(ds)     → renames ERA5 dimensions to the internal time/level/lat/lon convention
+  - inspect_dataset(ds)            → prints summary
+Note:       ERA5 dims (valid_time, pressure_level, lat, lon) → (time, level, lat, lon)
+
+--------------------------------------------------------------------------------
+4. src/features.py — Atmospheric Feature Engineering
+--------------------------------------------------------------------------------
+Purpose:    Calculate core atmospheric features from raw pressure-level data
+Key funcs:
+  - calculate_iwv(q)                    → Integrated Water Vapor (mm)
+  - calculate_wind_shear(u, v)          → Bulk wind shear 1000-500mb (m/s)
+  - calculate_lifted_index_simple(T)    → Surface-500mb temp diff (proxy for LI)
+  - calculate_humidity_at_level(q)      → Specific humidity at 850mb
+  - calculate_convergence(u, v)         → Surface wind convergence
+  - calculate_all_features(ds)          → xr.Dataset with all 6 features
+Variables: t (temperature), q (specific_humidity), u, v (wind components)
+
+--------------------------------------------------------------------------------
+5. src/labels.py — Storm Labeling from Precipitation
+--------------------------------------------------------------------------------
+Purpose:    Create binary storm labels from area-averaged rainfall
+Key funcs:
+  - build_storm_labels(precip_ds)       → 0/1 DataArray (time,)
+  - compute_area_mean_precip(precip_ds) → spatially-averaged rainfall (mm)
+  - inspect_precip_distribution(ds)     → prints rainfall statistics
+Strategy:   Top 15% of forward 3-hour area-mean rainfall windows = positive proxy label (not direct thunderstorm truth)
+Threshold:  Data-driven percentile (STORM_PERCENTILE=85), estimated from the earliest training portion only
+
+--------------------------------------------------------------------------------
+6. src/live_fetch.py — Live Atmospheric Data from Open-Meteo
+--------------------------------------------------------------------------------
+Purpose:    Fetch real-time atmospheric data for live predictions
+Key funcs:
+  - fetch_live_atmospheric_data()       → xr.Dataset (time, level, lat, lon)
+  - _fetch_batch(lat, lon, levels)      → batched HTTP request with retry
+  - build_grid_points()                 → recreates ERA5 training grid
+  - relative_humidity_to_specific_humidity() → RH → q conversion
+  - wind_speed_dir_to_uv()              → speed+direction → U/V components
+Features:   Batched requests (25 points/batch), exponential backoff retry
+API:        Open-Meteo free tier (no API key needed)
+
+--------------------------------------------------------------------------------
+7. src/live_log.py — Live Prediction Logging
+--------------------------------------------------------------------------------
+Purpose:    Append live predictions to CSV for track record
+Key funcs:
+  - append_log(prob, threshold, alert, time)
+  - load_log()    → pd.DataFrame
+  - save_log(df)  → writes back to CSV
+File:       data/processed/live_predictions_log.csv
+Columns:    logged_at_utc, latest_data_time, probability, threshold,
+            alert, actual_outcome (manual), notes
+
+--------------------------------------------------------------------------------
+8. src/live_predict_core.py — Shared Live Prediction Logic
+--------------------------------------------------------------------------------
+Purpose:    One implementation shared by app.py and 03_live_predict.py
+Key func:   run_live_prediction() → dict with probability, threshold, alert, etc.
+Pipeline:   fetch_live_data → calculate_features → normalize → model.predict
+Checks:     Validates enough timesteps, handles errors gracefully
+
+--------------------------------------------------------------------------------
+9. src/model.py — CNN + LSTM Model Architecture
+--------------------------------------------------------------------------------
+Purpose:    Build the thunderstorm prediction model
+Key funcs:
+  - build_mvp_model(input_shape)  → tf.keras.Model
+  - get_callbacks(model_save_path) → [EarlyStopping, ModelCheckpoint, ReduceLR]
+Architecture:
+  Input → TimeDistributed(Conv2D(16)) → BN → MaxPool
+        → TimeDistributed(Conv2D(32)) → BN → GlobalAvgPool
+        → LSTM(64, dropout=0.2)
+        → Dense(32) → Dropout(0.2)
+        → Dense(1, sigmoid) → thunderstorm_probability
+Input:      (timesteps, height, width, n_features) e.g. (24, 23, 17, 6)
+Output:     Single float [0,1] = storm probability
+
+--------------------------------------------------------------------------------
+10. notebooks/00_quick_start_synthetic_test.py — Synthetic Test
+--------------------------------------------------------------------------------
+Purpose:    End-to-end pipeline validation with fake data (run FIRST)
+Steps:      Generate synthetic data → Build X,y → Train model → Evaluate
+Why:        Proves code works before downloading real ERA5 data
+Run with:   python notebooks/00_quick_start_synthetic_test.py
+
+--------------------------------------------------------------------------------
+11. notebooks/01_build_dataset.py — Full Data Pipeline
+--------------------------------------------------------------------------------
+Purpose:    Load ERA5 → Compute features → Compute labels → Save arrays
+Steps:
+  1. Load & merge pressure-level and precipitation files
+  2. Check rainfall distribution (sanity-check threshold)
+  3. Compute atmospheric features (src/features.py)
+  4. Build storm labels from precipitation (src/labels.py)
+  5. Stack features into (time, lat, lon, n_features)
+  6. Handle NaNs; save RAW windows. Normalize later using training-only statistics
+  7. Build sliding time windows (24-hour lookback)
+  8. Save X.npy, y.npy, feature_names.npy, sample_times.npy
+Run with:   python notebooks/01_build_dataset.py
+
+--------------------------------------------------------------------------------
+12. notebooks/02_train_model.py — Model Training
+--------------------------------------------------------------------------------
+Purpose:    Train the CNN+LSTM model on real processed data
+Key funcs:
+  - set_all_seeds()                    → reproducibility
+  - blocked_time_split(X, y)           → time-aware train/val/test split
+  - compute_class_weights(y_train)     → handle class imbalance
+  - find_best_threshold(model, X_val)  → recall-biased threshold tuning
+  - evaluate_model(model, X_test)      → detailed metrics (acc, prec, rec, F1, AUC)
+Strategy:   Chronological split with purge gap, training-only normalization, class weights, threshold tuned on VAL
+Output:     models/thunderstorm_mvp.h5
+Run with:   python notebooks/02_train_model.py
+
+--------------------------------------------------------------------------------
+13. notebooks/03_live_predict.py — Live Prediction Script
+--------------------------------------------------------------------------------
+Purpose:    Command-line live thunderstorm prediction (proof of concept)
+Pipeline:   Run live prediction → Print result → Log to CSV
+Caveats:    Uses Open-Meteo (different from ERA5 training data), so this is integration proof-of-concept, not a validated operational forecast
+Run with:   python notebooks/03_live_predict.py
+
+--------------------------------------------------------------------------------
+14. notebooks/download_era5.py — ERA5 Data Downloader
+--------------------------------------------------------------------------------
+Purpose:    Download ERA5 reanalysis data via CDS API
+Data:       Pressure levels (temp, humidity, wind) + single level (precipitation)
+Region:     Tamil Nadu (lat 8.0-13.5, lon 76.5-80.5)
+Period:     July-August 2020, hourly resolution
+Chunks:     5-day chunks to stay under CDS cost limits
+Files:      ~28 NetCDF files in data/raw/
+Setup:      Requires CDS API key (~/.cdsapirc)
+Run with:   python notebooks/download_era5.py
+
+================================================================================
+                        DEPENDENCIES (requirements.txt)
+================================================================================
+
+numpy==1.26.4          pandas==2.2.0          xarray==2024.1.1
+netCDF4==1.6.5         rasterio==1.3.9        scikit-learn==1.4.0
+tensorflow==2.15.0     matplotlib==3.8.2      seaborn==0.13.2
+plotly==5.18.0         streamlit==1.31.0      jupyter==1.0.0
+ipykernel==6.29.0      tqdm==4.66.1           python-dotenv==1.0.1
+
+================================================================================
+                          DATA FILES INVENTORY
+================================================================================
+
+Raw ERA5 Data (28 NetCDF files in data/raw/):
+  - era5_pressure_levels_2020-07-01_2020-07-05.nc  (and similar for all chunks)
+  - era5_single_level_2020-07-01_2020-07-05.nc     (and similar for all chunks)
+  Variables: temperature, specific_humidity, u/v wind (pressure), total_precipitation
+
+Processed Data (base files plus training artifacts created after training):
+  - X.npy            — Feature array for model input
+  - y.npy            — Binary storm labels (0/1)
+  - feature_mean.npy — Per-feature mean for z-score normalization
+  - feature_std.npy  — Per-feature std for z-score normalization
+  - feature_names.npy — Feature names ["iwv", "wind_shear", ...]
+  - sample_times.npy — Timestamps for each sample
+
+Model (1 file in models/):
+  - thunderstorm_mvp.h5 — Trained Keras model weights
+
+Live Prediction Log:
+  - data/processed/live_predictions_log.csv — Accumulating track record
+
+================================================================================
+                         HOW TO USE THE PROJECT
+================================================================================
+
+1. SETUP:
+   python -m venv venv
+   source venv/bin/activate
+   pip install -r requirements.txt
+
+2. QUICK TEST (no data needed):
+   python notebooks/00_quick_start_synthetic_test.py
+
+3. DOWNLOAD DATA:
+   Set up CDS API key, then:
+   python notebooks/download_era5.py
+
+4. BUILD DATASET:
+   python notebooks/01_build_dataset.py
+
+5. TRAIN MODEL:
+   python notebooks/02_train_model.py
+
+6. RUN DASHBOARD:
+   streamlit run app.py
+
+7. LIVE PREDICTION:
+   python notebooks/03_live_predict.py
+
+================================================================================
+                         END OF PROJECT SUMMARY
+================================================================================
+
+
+================================================================================
+                        METHODOLOGY CORRECTIONS (2026-09)
+================================================================================
+1. Target alignment is now explicitly forward-looking: rainfall from T+1 through T+3.
+2. The rainfall-proxy threshold is estimated from the earliest training portion only.
+3. Feature normalization is fitted on TRAIN samples only, then applied to VAL/TEST/live data.
+4. Sliding-window samples use chronological train/validation/test splits with a purge gap.
+5. Exact train/validation/test indices are saved and reused by Streamlit.
+6. The validation-tuned alert threshold is saved to data/processed/alert_threshold.npy.
+7. Test reporting includes ROC-AUC, PR-AUC and Brier score where mathematically valid.
+8. The dashboard no longer claims that a historical rainfall proxy is direct thunderstorm truth.
+9. The convergence feature converts geographic degree spacing to approximate metres before differentiation.
+10. The README and source documentation have been synchronized with the current ERA5/Tamil Nadu implementation.
+
+IMPORTANT: The repository does not contain enough historical data in this ZIP to produce a new
+final model benchmark. Run download_era5.py, 01_build_dataset.py and 02_train_model.py before
+using the generated model/metadata files for SIH claims.
