@@ -45,9 +45,13 @@ from configs.config import LAT_MIN, LAT_MAX, LON_MIN, LON_MAX
 
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 GRID_STEP = 0.25  # must match the resolution used when downloading ERA5
-BATCH_SIZE = 25   # grid points per HTTP request -- keeps URL length and
-                   # response size reasonable while cutting request count
-                   # by ~25x compared to one-point-per-request
+# Open-Meteo's free tier is rate-limited aggressively when many short
+# requests hit in quick succession. A larger batch size reduces the number
+# of requests per live refresh and makes the dashboard much less likely to
+# trip a 429 on the first fetch. The request URL is still modest because we
+# send 2 levels * 4 variables per point, i.e. a few thousand characters at
+# most for a few hundred points in one call.
+BATCH_SIZE = 100
 
 # Hardcoded (not imported from configs.config) to guarantee this always
 # matches notebooks/download_open_meteo.py's LEVELS exactly -- that
@@ -107,11 +111,11 @@ def _fetch_batch(lat_list, lon_list, levels, past_days=2, forecast_days=1,
         "timezone": "UTC",
     }
 
+    headers = {"User-Agent": "weather-nowcasting-demo/1.0"}
     backoff = initial_backoff_seconds
-    last_error = None
     for attempt in range(max_retries + 1):
         try:
-            resp = requests.get(OPEN_METEO_URL, params=params, timeout=60)
+            resp = requests.get(OPEN_METEO_URL, params=params, timeout=90, headers=headers)
             is_retryable = resp.status_code == 429 or resp.status_code >= 500
             if is_retryable:
                 reason = ("rate limited (429)" if resp.status_code == 429
@@ -123,9 +127,8 @@ def _fetch_batch(lat_list, lon_list, levels, past_days=2, forecast_days=1,
                 data = [data]
             return data
         except requests.exceptions.RequestException as e:
-            last_error = e
             if attempt == max_retries:
-                raise  # exhausted retries, propagate the real error
+                raise
             print(f"    Request failed ({e}) -- waiting {backoff}s before retry "
                   f"{attempt + 1}/{max_retries}...")
             time.sleep(backoff)
@@ -171,7 +174,7 @@ def fetch_live_atmospheric_data(levels=None, timesteps_needed=24):
         results = _fetch_batch(batch_lats, batch_lons, levels)
 
         if batch_idx < n_batches - 1:
-            time.sleep(1.5)  # small pause between requests to avoid rate limiting
+            time.sleep(2.0)  # small pause between batched requests to avoid rate limiting
 
         for point_idx, (i, j, lat, lon) in enumerate(batch):
             hourly = results[point_idx]["hourly"]
