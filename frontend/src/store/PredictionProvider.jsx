@@ -82,7 +82,11 @@ export function PredictionProvider({ children }) {
           .then((d) => patchHazard(hazard, { logRows: d.rows }))
           .catch(() => {});
       } catch (err) {
-        patchHazard(hazard, { loading: false, error: err.message || "Live fetch failed." });
+        patchHazard(hazard, (prevHazardState) => ({
+          loading: false,
+          error: prevHazardState.result ? null : (err.message || "Live fetch failed."),
+          result: prevHazardState.result,
+        }));
       }
     },
     [patchHazard]
@@ -93,33 +97,27 @@ export function PredictionProvider({ children }) {
     [patchHazard]
   );
 
-  // Fetch both hazards once on app load, then keep refreshing on a timer.
-  // Lives here (not in a page component) so it starts once per app
-  // session and isn't torn down/restarted by route navigation.
-  //
-  // initialFetchStarted guards ONLY the one-time kickoff fetch, not the
-  // interval setup below. Reason: React 18 StrictMode (development only)
-  // deliberately runs this effect twice -- mount, cleanup, mount again --
-  // to surface effects that aren't safe to repeat. setInterval/clearInterval
-  // pairing is already safe to run twice (the first interval is cleared
-  // before it can ever fire), but fetchHazard() has a real side effect
-  // (an actual network call), so without this guard StrictMode caused two
-  // concurrent live fetches to fire on every page load.
+  // Fetch hazards on app load (staggered to prevent hitting Open-Meteo simultaneously),
+  // then keep refreshing on a timer.
   const initialFetchStarted = useRef(false);
 
   useEffect(() => {
     if (!initialFetchStarted.current) {
       initialFetchStarted.current = true;
-      HAZARDS.forEach((hazard) => {
-        fetchHazard(hazard);
-        fetchLog(hazard)
-          .then((d) => patchHazard(hazard, { logRows: d.rows }))
-          .catch(() => {});
+      HAZARDS.forEach((hazard, idx) => {
+        setTimeout(() => {
+          fetchHazard(hazard);
+          fetchLog(hazard)
+            .then((d) => patchHazard(hazard, { logRows: d.rows }))
+            .catch(() => {});
+        }, idx * 4000);
       });
     }
 
     const interval = setInterval(() => {
-      HAZARDS.forEach((hazard) => fetchHazard(hazard));
+      HAZARDS.forEach((hazard, idx) => {
+        setTimeout(() => fetchHazard(hazard), idx * 4000);
+      });
     }, AUTO_REFRESH_MS);
 
     return () => clearInterval(interval);

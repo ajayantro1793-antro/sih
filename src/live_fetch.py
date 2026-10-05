@@ -36,12 +36,25 @@ Usage:
 import os
 import sys
 import time
+import pickle
+import threading
 import numpy as np
 import xarray as xr
 import requests
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from configs.config import LAT_MIN, LAT_MAX, LON_MIN, LON_MAX
+
+_FETCH_LOCK = threading.Lock()
+_CACHE = {
+    "dataset": None,
+    "fetched_at": 0.0,
+}
+CACHE_TTL_SECONDS = 900  # 15 minutes (Open-Meteo operational data is hourly)
+BACKUP_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data", "processed", "latest_live_ds.pkl"
+)
 
 OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
 GRID_STEP = 0.25  # must match the resolution used when downloading ERA5
@@ -135,7 +148,7 @@ def _fetch_batch(lat_list, lon_list, levels, past_days=2, forecast_days=1,
             backoff *= 2  # exponential backoff
 
 
-def fetch_live_atmospheric_data(levels=None, timesteps_needed=24):
+def fetch_live_atmospheric_data(levels=None, timesteps_needed=24, force_refresh=False):
     """
     Fetch live data for the full study-region grid and assemble it into an
     xarray Dataset with dims (time, level, lat, lon) and variables
@@ -143,80 +156,125 @@ def fetch_live_atmospheric_data(levels=None, timesteps_needed=24):
     relative humidity, unconverted; features.py derives specific humidity
     internally).
 
+    Uses a thread lock and 15-minute in-memory cache to prevent multiple
+    concurrent requests from slamming Open-Meteo with redundant queries.
+    Falls back gracefully to cached or on-disk backup data if Open-Meteo
+    rate limits (HTTP 429) or is temporarily unavailable.
+
     Returns:
         xr.Dataset with the most recent `timesteps_needed` hourly steps.
     """
+    global _CACHE
     if levels is None:
         levels = LEVELS
 
-    lats, lons = build_grid_points()
-    n_lat, n_lon = len(lats), len(lons)
-    n_level = len(levels)
+    with _FETCH_LOCK:
+        now = time.time()
+        # Return in-memory cache if still fresh
+        if not force_refresh and _CACHE["dataset"] is not None and (now - _CACHE["fetched_at"] < CACHE_TTL_SECONDS):
+            print(f"Returning cached live atmospheric data (age: {int(now - _CACHE['fetched_at'])}s)...")
+            return _CACHE["dataset"].copy()
 
-    # Flatten grid into a list of (i, j, lat, lon) so we can batch requests
-    # while remembering where each point belongs in the final grid.
-    flat_points = [(i, j, lat, lon) for i, lat in enumerate(lats) for j, lon in enumerate(lons)]
-    n_points = len(flat_points)
-    n_batches = (n_points + BATCH_SIZE - 1) // BATCH_SIZE
+        lats, lons = build_grid_points()
+        n_lat, n_lon = len(lats), len(lons)
+        n_level = len(levels)
 
-    print(f"Fetching live data for {n_lat}x{n_lon} grid ({n_points} points) "
-          f"in {n_batches} batched requests of up to {BATCH_SIZE} points each...")
+        # Flatten grid into a list of (i, j, lat, lon) so we can batch requests
+        # while remembering where each point belongs in the final grid.
+        flat_points = [(i, j, lat, lon) for i, lat in enumerate(lats) for j, lon in enumerate(lons)]
+        n_points = len(flat_points)
+        n_batches = (n_points + BATCH_SIZE - 1) // BATCH_SIZE
 
-    t_grid, r_grid, u_grid, v_grid = None, None, None, None
-    time_index = None
+        try:
+            print(f"Fetching live data for {n_lat}x{n_lon} grid ({n_points} points) "
+                  f"in {n_batches} batched requests of up to {BATCH_SIZE} points each...")
 
-    for batch_idx in range(n_batches):
-        batch = flat_points[batch_idx * BATCH_SIZE : (batch_idx + 1) * BATCH_SIZE]
-        batch_lats = [p[2] for p in batch]
-        batch_lons = [p[3] for p in batch]
+            t_grid, r_grid, u_grid, v_grid = None, None, None, None
+            time_index = None
 
-        print(f"  Batch {batch_idx + 1}/{n_batches} ({len(batch)} points)...")
-        results = _fetch_batch(batch_lats, batch_lons, levels)
+            for batch_idx in range(n_batches):
+                batch = flat_points[batch_idx * BATCH_SIZE : (batch_idx + 1) * BATCH_SIZE]
+                batch_lats = [p[2] for p in batch]
+                batch_lons = [p[3] for p in batch]
 
-        if batch_idx < n_batches - 1:
-            time.sleep(2.0)  # small pause between batched requests to avoid rate limiting
+                print(f"  Batch {batch_idx + 1}/{n_batches} ({len(batch)} points)...")
+                results = _fetch_batch(batch_lats, batch_lons, levels)
 
-        for point_idx, (i, j, lat, lon) in enumerate(batch):
-            hourly = results[point_idx]["hourly"]
-            times = np.array(hourly["time"], dtype="datetime64[ns]")
+                if batch_idx < n_batches - 1:
+                    time.sleep(2.0)  # small pause between batched requests to avoid rate limiting
 
-            if time_index is None:
-                time_index = times
-                n_time = len(time_index)
-                t_grid = np.full((n_time, n_level, n_lat, n_lon), np.nan, dtype="float32")
-                r_grid = np.full((n_time, n_level, n_lat, n_lon), np.nan, dtype="float32")
-                u_grid = np.full((n_time, n_level, n_lat, n_lon), np.nan, dtype="float32")
-                v_grid = np.full((n_time, n_level, n_lat, n_lon), np.nan, dtype="float32")
+                for point_idx, (i, j, lat, lon) in enumerate(batch):
+                    hourly = results[point_idx]["hourly"]
+                    times = np.array(hourly["time"], dtype="datetime64[ns]")
 
-            for k, lvl in enumerate(levels):
-                temp_c = np.array(hourly[f"temperature_{lvl}hPa"])
-                rh = np.array(hourly[f"relative_humidity_{lvl}hPa"])
-                speed = np.array(hourly[f"wind_speed_{lvl}hPa"])
-                direction = np.array(hourly[f"wind_direction_{lvl}hPa"])
+                    if time_index is None:
+                        time_index = times
+                        n_time = len(time_index)
+                        t_grid = np.full((n_time, n_level, n_lat, n_lon), np.nan, dtype="float32")
+                        r_grid = np.full((n_time, n_level, n_lat, n_lon), np.nan, dtype="float32")
+                        u_grid = np.full((n_time, n_level, n_lat, n_lon), np.nan, dtype="float32")
+                        v_grid = np.full((n_time, n_level, n_lat, n_lon), np.nan, dtype="float32")
 
-                u, v = wind_speed_dir_to_uv(speed, direction)
+                    for k, lvl in enumerate(levels):
+                        temp_c = np.array(hourly[f"temperature_{lvl}hPa"])
+                        rh = np.array(hourly[f"relative_humidity_{lvl}hPa"])
+                        speed = np.array(hourly[f"wind_speed_{lvl}hPa"])
+                        direction = np.array(hourly[f"wind_direction_{lvl}hPa"])
 
-                n_here = min(len(temp_c), t_grid.shape[0])
-                t_grid[:n_here, k, i, j] = temp_c[:n_here] + 273.15  # -> Kelvin, matches training data
-                r_grid[:n_here, k, i, j] = rh[:n_here]  # raw %, NOT converted here
-                u_grid[:n_here, k, i, j] = u[:n_here]
-                v_grid[:n_here, k, i, j] = v[:n_here]
+                        u, v = wind_speed_dir_to_uv(speed, direction)
 
-    ds = xr.Dataset(
-        {
-            "t": (["time", "level", "lat", "lon"], t_grid),
-            "r": (["time", "level", "lat", "lon"], r_grid),
-            "u": (["time", "level", "lat", "lon"], u_grid),
-            "v": (["time", "level", "lat", "lon"], v_grid),
-        },
-        coords={"time": time_index, "level": levels, "lat": lats, "lon": lons},
-    )
+                        n_here = min(len(temp_c), t_grid.shape[0])
+                        t_grid[:n_here, k, i, j] = temp_c[:n_here] + 273.15  # -> Kelvin, matches training data
+                        r_grid[:n_here, k, i, j] = rh[:n_here]  # raw %, NOT converted here
+                        u_grid[:n_here, k, i, j] = u[:n_here]
+                        v_grid[:n_here, k, i, j] = v[:n_here]
 
-    # Keep only the most recent `timesteps_needed` steps
-    ds = ds.isel(time=slice(-timesteps_needed, None))
-    print(f"Fetched {ds.sizes['time']} recent hourly timesteps, "
-          f"latest: {str(ds.time.values[-1])}")
-    return ds
+            ds = xr.Dataset(
+                {
+                    "t": (["time", "level", "lat", "lon"], t_grid),
+                    "r": (["time", "level", "lat", "lon"], r_grid),
+                    "u": (["time", "level", "lat", "lon"], u_grid),
+                    "v": (["time", "level", "lat", "lon"], v_grid),
+                },
+                coords={"time": time_index, "level": levels, "lat": lats, "lon": lons},
+            )
+
+            # Keep only the most recent `timesteps_needed` steps
+            ds = ds.isel(time=slice(-timesteps_needed, None))
+            print(f"Fetched {ds.sizes['time']} recent hourly timesteps, "
+                  f"latest: {str(ds.time.values[-1])}")
+
+            # Save in memory cache
+            _CACHE["dataset"] = ds
+            _CACHE["fetched_at"] = time.time()
+
+            # Save backup to disk
+            try:
+                os.makedirs(os.path.dirname(BACKUP_PATH), exist_ok=True)
+                with open(BACKUP_PATH, "wb") as f:
+                    pickle.dump(ds, f)
+            except Exception as save_err:
+                print(f"Warning: could not save backup dataset: {save_err}")
+
+            return ds.copy()
+
+        except Exception as fetch_err:
+            print(f"Live Open-Meteo fetch failed ({fetch_err}). Checking cache/backup...")
+            if _CACHE["dataset"] is not None:
+                print("Serving previously cached in-memory dataset.")
+                return _CACHE["dataset"].copy()
+            if os.path.exists(BACKUP_PATH):
+                try:
+                    with open(BACKUP_PATH, "rb") as f:
+                        cached_ds = pickle.load(f)
+                    print("Successfully loaded fallback dataset from disk backup.")
+                    _CACHE["dataset"] = cached_ds
+                    _CACHE["fetched_at"] = time.time()
+                    return cached_ds.copy()
+                except Exception as disk_err:
+                    print(f"Error loading disk backup: {disk_err}")
+            # If no fallback available anywhere, raise original error
+            raise
 
 
 if __name__ == "__main__":

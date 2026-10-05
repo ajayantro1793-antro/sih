@@ -84,18 +84,31 @@ def health():
     return {"status": "ok"}
 
 
+_PREDICTION_CACHE = {}
+
+
 @app.get("/api/live/{hazard}")
 def get_live_prediction(hazard: str):
     """
     Fetch live data, run the trained model, log the result, and return it.
     """
     cfg = _get_hazard_cfg(hazard)
-    result = cfg["run"]()
+    try:
+        result = cfg["run"]()
+    except Exception as e:
+        result = {"error": str(e), "districts": []}
 
-    if result["error"]:
+    if result.get("error"):
+        cached = _PREDICTION_CACHE.get(hazard)
+        if cached:
+            return cached
         raise HTTPException(status_code=502, detail=result["error"])
 
-    cfg["append_log"](districts=result["districts"], latest_time=result["latest_time"])
+    _PREDICTION_CACHE[hazard] = result
+    try:
+        cfg["append_log"](districts=result["districts"], latest_time=result["latest_time"])
+    except Exception as log_err:
+        print(f"Log append warning: {log_err}")
     return result
 
 
