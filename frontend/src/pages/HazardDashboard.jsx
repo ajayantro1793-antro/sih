@@ -110,27 +110,37 @@ export default function HazardDashboard({ hazard }) {
               <RefreshCw size={15} className={loading ? "animate-spin" : ""} />
               {loading ? "Fetching live data…" : "Refresh now"}
             </button>
-            <span className="text-[10px] text-slate-600 font-mono">auto-refreshes every {formatRefreshInterval(autoRefreshMs)}</span>
+            <span className="text-[10px] text-slate-600 font-mono">
+              {result?.cache_age_seconds != null
+                ? `server data age: ${Math.round(result.cache_age_seconds / 60)} min`
+                : `auto-refreshes every ${formatRefreshInterval(autoRefreshMs)}`}
+            </span>
           </div>
         </header>
 
         <p className="text-xs text-slate-500 leading-relaxed mb-5 max-w-3xl">{meta.caveat}</p>
 
-        {error && (
+        {error && !result && (
           <div className="mb-5 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300 flex items-center gap-2">
-            <AlertTriangle size={15} /> Live fetch failed: {error}
+            <AlertTriangle size={15} /> {error}
           </div>
         )}
 
         {result && (
           <div className="mb-3 text-[11px] text-slate-500 font-mono">
-            Based on live atmospheric data through <span className="text-slate-300">{result.latest_time}</span>
+            Based on live atmospheric data through{" "}
+            <span className="text-slate-300">{result.latest_time}</span>
+            {result.cache_age_seconds != null && (
+              <span className="ml-2 text-slate-600">
+                (server updated {Math.round(result.cache_age_seconds / 60)} min ago)
+              </span>
+            )}
           </div>
         )}
 
         {!result && loading && (
           <div className="mb-5 rounded-lg border border-slate-800 bg-slate-900/40 px-4 py-6 text-center text-sm text-slate-500 font-mono">
-            Fetching live data from Open-Meteo across the state grid — this can take a minute…
+            Loading prediction data — server is warming up, please wait ~60 s…
           </div>
         )}
 
