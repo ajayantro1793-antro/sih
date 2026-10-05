@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from "react";
-import { Zap, RefreshCw, Clock, Wifi, WifiOff, AlertTriangle } from "lucide-react";
+import { Link } from "react-router-dom";
+import { Zap, CloudRain, Droplets, RefreshCw, Clock, Wifi, WifiOff, AlertTriangle, ArrowRight } from "lucide-react";
 import RiskCard from "../components/RiskCard";
 import PerformanceCard from "../components/PerformanceCard";
+import LockedRiskCard from "../components/LockedRiskCard";
 import StationGrid from "../components/StationGrid";
 import Gauge from "../components/Gauge";
 import FeatureSnapshot from "../components/FeatureSnapshot";
@@ -11,15 +13,22 @@ import { fetchConfig, fetchMetadata } from "../api";
 import { featureLabel } from "../featureLabels";
 import { useHazardData } from "../store/PredictionProvider";
 
-// PRESENTATION BUILD: this component is hazard-agnostic (still takes a
-// `hazard` prop), but App.jsx only routes "thunderstorm" to it right now.
 const HAZARD_META = {
   thunderstorm: {
     title: "Thunderstorm",
     icon: Zap,
     color: "#fbbf24",
+    otherHazard: { to: "/cloudburst-tn", label: "Cloudburst", icon: CloudRain },
     caveat:
       "Uses Open-Meteo operational forecast data — the same source this model was trained on — plus rectangular district-box approximations (src/districts.py). Proof of concept only, not a validated operational forecast.",
+  },
+  cloudburst: {
+    title: "Cloudburst",
+    icon: CloudRain,
+    color: "#38bdf8",
+    otherHazard: { to: "/thunderstorm-tn", label: "Thunderstorm", icon: Zap },
+    caveat:
+      "Cloudburst labels are an extreme-rainfall proxy (top ~3% of forward rainfall windows per district), not a confirmed cloudburst event record — true cloudbursts are sub-grid-scale, sub-hourly events this hourly/0.25° pipeline cannot resolve directly. Includes terrain (DEM) features: elevation, slope, and a simplified Topographic Wetness Index.",
   },
 };
 
@@ -125,8 +134,8 @@ export default function HazardDashboard({ hazard }) {
           </div>
         )}
 
-        {/* Risk card + real performance card */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        {/* Risk card + real performance + other hazard + locked Flash Flood */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {selectedEntry ? (
             <RiskCard
               title={`${meta.title} — ${selectedEntry.name}`}
@@ -142,7 +151,24 @@ export default function HazardDashboard({ hazard }) {
               Waiting for first live fetch…
             </div>
           )}
+
           <PerformanceCard district={selectedDistrict || "—"} metrics={districtMetrics} />
+
+          <Link
+            to={meta.otherHazard.to}
+            className="rounded-xl border border-slate-700/60 bg-slate-900/60 p-5 flex flex-col justify-between hover:border-slate-500 transition-colors group"
+          >
+            <div className="flex items-center gap-2 text-slate-300 text-sm font-medium">
+              <meta.otherHazard.icon size={16} />
+              {meta.otherHazard.label} model
+            </div>
+            <div className="flex items-center justify-between mt-3">
+              <span className="text-xs text-slate-500">Also live — switch to check it</span>
+              <ArrowRight size={16} className="text-slate-600 group-hover:text-slate-300 group-hover:translate-x-0.5 transition-all" />
+            </div>
+          </Link>
+
+          <LockedRiskCard title="Flash Flood" icon={Droplets} />
         </div>
 
         {/* Statewide overview */}
@@ -165,7 +191,7 @@ export default function HazardDashboard({ hazard }) {
                   unit={featureLabel("iwv").unit}
                   min={0}
                   max={80}
-                  icon={Zap}
+                  icon={CloudRain}
                   zones={[
                     { upTo: 30, label: "Dry", color: "#34d399" },
                     { upTo: 50, label: "Moderate", color: "#fbbf24" },

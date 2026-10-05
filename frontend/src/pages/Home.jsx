@@ -1,11 +1,14 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Satellite, Zap, ArrowRight, Database, Cpu, Target, Map as MapIcon } from "lucide-react";
+import {
+  Satellite, Zap, CloudRain, Droplets, ArrowRight, Lock, Database,
+  Cpu, Target, Map as MapIcon, CheckCircle2,
+} from "lucide-react";
 import { fetchMetadata, fetchConfig } from "../api";
 
 const PIPELINE_STEPS = [
   { icon: Database, title: "Live fetch", desc: "Open-Meteo hourly forecast data across a 23×17 point grid over Tamil Nadu (391 points, 850/500 hPa)." },
-  { icon: Cpu, title: "Feature engineering", desc: "IWV, wind shear, lifted-index proxy, 850 hPa humidity, convergence, IWV trend — plus terrain (elevation, slope, TWI)." },
+  { icon: Cpu, title: "Feature engineering", desc: "IWV, wind shear, lifted-index proxy, 850 hPa humidity, convergence, IWV trend — plus terrain (elevation, slope, TWI) and, for cloudburst, moisture-flux convergence and 500 hPa humidity." },
   { icon: Target, title: "Multi-district CNN+LSTM", desc: "One shared backbone, masked per-district pooling — a single model outputs one probability per district, not one model per district." },
   { icon: MapIcon, title: "Per-district thresholds", desc: "Each district gets its own tuned alert threshold from validation-set precision/recall — a coastal district and a dry interior district don't share one cutoff." },
 ];
@@ -30,58 +33,93 @@ function averageAuc(metadata) {
 }
 
 export default function Home() {
-  const [meta, setMeta] = useState(null);
+  const [tMeta, setTMeta] = useState(null);
+  const [cMeta, setCMeta] = useState(null);
   const [config, setConfig] = useState(null);
 
   useEffect(() => {
-    fetchMetadata("thunderstorm").then(setMeta).catch(() => {});
+    fetchMetadata("thunderstorm").then(setTMeta).catch(() => {});
+    fetchMetadata("cloudburst").then(setCMeta).catch(() => {});
     fetchConfig().then(setConfig).catch(() => {});
   }, []);
 
+  const models = [
+    {
+      key: "thunderstorm", title: "Thunderstorm", icon: Zap, color: "#fbbf24",
+      to: "/thunderstorm-tn", live: true, meta: tMeta,
+      desc: "Heavy-rainfall proxy (85th percentile of forward rainfall), per district.",
+    },
+    {
+      key: "cloudburst", title: "Cloudburst", icon: CloudRain, color: "#38bdf8",
+      to: "/cloudburst-tn", live: true, meta: cMeta,
+      desc: "Extreme-rainfall proxy (97th percentile) + terrain (DEM) features.",
+    },
+    {
+      key: "flashflood", title: "Flash Flood", icon: Droplets, color: "#64748b",
+      to: null, live: false, meta: null,
+      desc: "Not built — no dataset, labels, or trained model yet.",
+    },
+  ];
+
   return (
     <div className="min-h-screen text-slate-200 bg-scan">
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-10">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8">
         <header className="flex items-center gap-3 mb-2">
           <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-cyan-500/20 to-cyan-500/5 border border-cyan-500/30 flex items-center justify-center">
             <Satellite size={22} className="text-cyan-400" />
           </div>
           <div>
             <h1 className="font-display text-2xl font-bold text-white">Weather Nowcasting AI</h1>
-            <p className="text-sm text-slate-500">Tamil Nadu — Thunderstorm Nowcasting</p>
+            <p className="text-sm text-slate-500">Tamil Nadu — Smart India Hackathon 2026</p>
           </div>
         </header>
         <p className="text-sm text-slate-500 max-w-2xl mb-8">
-          Per-district thunderstorm risk from live Open-Meteo forecast data, using a multi-district
-          CNN+LSTM model trained on two years of historical data across 13 Tamil Nadu districts.
+          Per-district severe-weather nowcasting from live Open-Meteo forecast data. Two hazards are
+          trained and live right now; a third is on the roadmap.
         </p>
 
-        {/* Hero CTA */}
-        <Link
-          to="/thunderstorm-tn"
-          className="block rounded-2xl border border-amber-500/30 bg-gradient-to-br from-amber-500/10 to-transparent p-8 mb-10 hover:border-amber-500/50 transition-colors group"
-        >
-          <div className="flex items-center justify-between flex-wrap gap-4">
-            <div className="flex items-center gap-4">
-              <div className="w-14 h-14 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center">
-                <Zap size={26} className="text-amber-400" />
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="font-display text-lg font-bold text-white">Thunderstorm Dashboard</span>
-                  <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-400">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 pulse-dot" /> LIVE
-                  </span>
+        <section className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-10">
+          {models.map((m) => {
+            const CardInner = (
+              <div
+                className={`rounded-xl border p-5 h-full flex flex-col transition-colors ${
+                  m.live ? "border-slate-700/60 bg-slate-900/60 hover:border-slate-500" : "border-slate-800 bg-slate-900/30 opacity-60"
+                }`}
+              >
+                <div className="flex items-center justify-between mb-3">
+                  <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ background: `${m.color}1a` }}>
+                    <m.icon size={17} style={{ color: m.color }} />
+                  </div>
+                  {m.live ? (
+                    <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-400">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 pulse-dot" /> LIVE
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-[10px] font-bold text-slate-600">
+                      <Lock size={10} /> ROADMAP
+                    </span>
+                  )}
                 </div>
-                <div className="text-sm text-slate-400 mt-0.5">
-                  {meta ? `Avg. test AUC ${(averageAuc(meta) * 100 || 0).toFixed(0)}% across ${meta.districts?.length ?? "—"} districts` : "Loading model stats…"}
-                </div>
+                <div className="font-display font-semibold text-white">{m.title}</div>
+                <div className="text-xs text-slate-500 mt-1 flex-1">{m.desc}</div>
+                {m.live && (
+                  <div className="flex items-center justify-between mt-4 text-xs">
+                    <span className="text-slate-500 font-mono">
+                      {m.meta ? `AUC ${(averageAuc(m.meta) * 100 || 0).toFixed(0)}% avg` : "loading…"}
+                    </span>
+                    <ArrowRight size={14} className="text-slate-600" />
+                  </div>
+                )}
               </div>
-            </div>
-            <ArrowRight size={22} className="text-slate-500 group-hover:text-amber-400 group-hover:translate-x-1 transition-all" />
-          </div>
-        </Link>
+            );
+            return m.to ? (
+              <Link key={m.key} to={m.to}>{CardInner}</Link>
+            ) : (
+              <div key={m.key}>{CardInner}</div>
+            );
+          })}
+        </section>
 
-        {/* Pipeline */}
         <section className="mb-10">
           <h2 className="font-display text-sm font-semibold text-slate-300 mb-3">How a prediction is made</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -98,28 +136,33 @@ export default function Home() {
           </div>
         </section>
 
-        {/* Real training stats */}
         <section className="mb-10">
           <h2 className="font-display text-sm font-semibold text-slate-300 mb-3">Real training statistics</h2>
-          <div className="rounded-xl border border-slate-700/60 bg-slate-900/60 p-5">
-            {!meta ? (
-              <div className="text-xs text-slate-600 font-mono">loading…</div>
-            ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-                <StatBlock label="Train samples" value={meta.train_samples} />
-                <StatBlock label="Val samples" value={meta.val_samples} />
-                <StatBlock label="Test samples" value={meta.test_samples} />
-                <StatBlock label="Features" value={meta.features?.length ?? "—"} />
-                <StatBlock label="Districts" value={meta.districts?.length ?? "—"} />
-                <StatBlock label="Avg test AUC" value={averageAuc(meta) ? averageAuc(meta).toFixed(2) : "—"} />
-              </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {[{ label: "Thunderstorm", meta: tMeta, color: "#fbbf24" }, { label: "Cloudburst", meta: cMeta, color: "#38bdf8" }].map(
+              ({ label, meta, color }) => (
+                <div key={label} className="rounded-xl border border-slate-700/60 bg-slate-900/60 p-4">
+                  <div className="text-sm font-medium mb-3" style={{ color }}>{label}</div>
+                  {!meta ? (
+                    <div className="text-xs text-slate-600 font-mono">loading…</div>
+                  ) : (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                      <StatBlock label="Train samples" value={meta.train_samples} />
+                      <StatBlock label="Val samples" value={meta.val_samples} />
+                      <StatBlock label="Test samples" value={meta.test_samples} />
+                      <StatBlock label="Features" value={meta.features?.length ?? "—"} />
+                      <StatBlock label="Districts" value={meta.districts?.length ?? "—"} />
+                      <StatBlock label="Avg test AUC" value={averageAuc(meta) ? averageAuc(meta).toFixed(2) : "—"} />
+                    </div>
+                  )}
+                </div>
+              )
             )}
           </div>
         </section>
 
-        {/* System parameters */}
         {config && (
-          <section>
+          <section className="mb-10">
             <h2 className="font-display text-sm font-semibold text-slate-300 mb-3">System parameters</h2>
             <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-4 flex flex-wrap gap-x-8 gap-y-2 text-xs font-mono text-slate-500">
               <span>Region: <span className="text-slate-300">{config.region_name}</span></span>
@@ -130,6 +173,26 @@ export default function Home() {
             </div>
           </section>
         )}
+
+        <section>
+          <h2 className="font-display text-sm font-semibold text-slate-300 mb-3">Roadmap</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {[
+              { done: true, text: "Thunderstorm model — trained, live" },
+              { done: true, text: "Cloudburst model + DEM/terrain features — trained, live" },
+              { done: false, text: "Flash flood model — needs its own label definition, dataset, training" },
+            ].map((r, i) => (
+              <div key={i} className="rounded-xl border border-slate-800 bg-slate-900/40 p-3.5 flex items-start gap-2.5">
+                {r.done ? (
+                  <CheckCircle2 size={16} className="text-emerald-400 flex-shrink-0 mt-0.5" />
+                ) : (
+                  <Lock size={16} className="text-slate-600 flex-shrink-0 mt-0.5" />
+                )}
+                <span className={`text-xs leading-relaxed ${r.done ? "text-slate-300" : "text-slate-500"}`}>{r.text}</span>
+              </div>
+            ))}
+          </div>
+        </section>
       </div>
     </div>
   );

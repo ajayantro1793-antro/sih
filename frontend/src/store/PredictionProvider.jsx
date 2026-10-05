@@ -1,18 +1,15 @@
 import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
 import { fetchLivePrediction, fetchLog } from "../api";
 
-// Open-Meteo's free tier is rate-limited aggressively, so automatic
-// refreshes must be much less frequent than they are in a typical demo.
-// Keeping it at 1 hour avoids hammering the API while still making the
-// dashboard feel alive for a deployed project.
-const AUTO_REFRESH_MS = 60 * 60 * 1000;
+// How often each hazard auto-refreshes itself, in milliseconds. The
+// underlying Open-Meteo data is hourly, so refreshing much faster than
+// this mostly just re-confirms the same numbers -- 10 minutes keeps the
+// dashboard feeling "live" without hammering the live-fetch pipeline
+// (each call does a full 391-point Open-Meteo fetch + model rebuild).
+// Change this one constant to adjust the interval for both hazards.
+const AUTO_REFRESH_MS = 10 * 60 * 1000;
 
-// PRESENTATION BUILD (Dr. Kalam Young Achiever Awards 2026): only
-// thunderstorm auto-fetches/auto-refreshes, so the demo doesn't spend
-// time on a live-fetch cycle for a hazard that isn't being shown. The
-// store itself is still hazard-agnostic -- add "cloudburst" back here to
-// resume fetching it in the background.
-const HAZARDS = ["thunderstorm"];
+const HAZARDS = ["thunderstorm", "cloudburst"];
 
 const PredictionContext = createContext(null);
 
@@ -85,13 +82,7 @@ export function PredictionProvider({ children }) {
           .then((d) => patchHazard(hazard, { logRows: d.rows }))
           .catch(() => {});
       } catch (err) {
-        patchHazard(hazard, (prevHazardState) => ({
-          loading: false,
-          error: err.message || "Live fetch failed.",
-          // Keep the previously successful result visible if Open-Meteo is
-          // rate-limiting the current refresh, instead of blanking the UI.
-          result: prevHazardState.result,
-        }));
+        patchHazard(hazard, { loading: false, error: err.message || "Live fetch failed." });
       }
     },
     [patchHazard]

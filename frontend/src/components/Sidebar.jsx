@@ -1,13 +1,15 @@
 import React from "react";
 import { NavLink } from "react-router-dom";
-import { Satellite, Home as HomeIcon, Zap } from "lucide-react";
+import { Satellite, Home as HomeIcon, Zap, CloudRain, Droplets, Lock } from "lucide-react";
 
-// PRESENTATION BUILD: only Overview + Thunderstorm are linked. To restore
-// Cloudburst, add back:
-//   { to: "/cloudburst-tn", label: "Cloudburst — TN", icon: CloudRain }
 const NAV_ITEMS = [
   { to: "/", label: "Overview", icon: HomeIcon, end: true },
   { to: "/thunderstorm-tn", label: "Thunderstorm — TN", icon: Zap },
+  { to: "/cloudburst-tn", label: "Cloudburst — TN", icon: CloudRain },
+];
+
+const UPCOMING_ITEMS = [
+  { label: "Flash Flood", icon: Droplets },
 ];
 
 export default function Sidebar() {
@@ -43,6 +45,21 @@ export default function Sidebar() {
             <item.icon size={16} />
             {item.label}
           </NavLink>
+        ))}
+
+        <div className="hidden md:block mt-4 px-3 pt-3 border-t border-slate-800/60">
+          <div className="text-[10px] uppercase tracking-wide text-slate-600 font-mono mb-1">On the roadmap</div>
+        </div>
+        {UPCOMING_ITEMS.map((item) => (
+          <div
+            key={item.label}
+            title="Not built yet — no dataset, labels, or trained model for this hazard"
+            className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm text-slate-600 whitespace-nowrap cursor-not-allowed"
+          >
+            <item.icon size={16} />
+            {item.label}
+            <Lock size={11} className="ml-auto flex-shrink-0" />
+          </div>
         ))}
       </nav>
     </aside>

@@ -3,26 +3,12 @@ FastAPI backend for the Live Prediction dashboard.
 
 Wraps the EXACT same functions the Streamlit app and
 notebooks/03_live_predict.py / 03b_live_predict_cloudburst.py already
-use -- src.live_predict_core.run_live_prediction() and
-src.live_predict_core_cloudburst.run_live_cloudburst_prediction() -- no
-model/inference logic is duplicated here, only exposed over HTTP.
+use -- no model/inference logic is duplicated here, only exposed over HTTP.
 
-PLACEMENT: put this file at D:\\SIH\\backend\\main.py (i.e. a new
-`backend` folder directly under your project root, alongside `src`,
-`configs`, `notebooks`). The sys.path line below assumes that location,
-mirroring the same pattern src/data_loader.py already uses.
-
-Run:
+Run from your project root (D:\\SIH):
     cd D:\\SIH
     venv\\Scripts\\Activate.ps1
-    pip install fastapi "uvicorn[standard]"
     uvicorn backend.main:app --reload --port 8000
-
-Each /api/live/{hazard} call does a full live Open-Meteo fetch across the
-391-point grid plus a model rebuild+predict -- expect it to take roughly
-as long as running notebooks/03_live_predict.py from the command line
-did (tens of seconds), not an instant response. The frontend should show
-a loading state for that whole window.
 """
 
 import json
@@ -61,6 +47,8 @@ app.add_middleware(
         "https://sih-ruby-five.vercel.app",
         *frontend_origins,
     ],
+    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -100,8 +88,6 @@ def health():
 def get_live_prediction(hazard: str):
     """
     Fetch live data, run the trained model, log the result, and return it.
-    Same behavior as clicking "Fetch live data & predict now" in the
-    Streamlit app's Live tab for this hazard.
     """
     cfg = _get_hazard_cfg(hazard)
     result = cfg["run"]()
@@ -116,10 +102,7 @@ def get_live_prediction(hazard: str):
 @app.get("/api/log/{hazard}")
 def get_log(hazard: str, limit: int = 200):
     """
-    Recent logged predictions for this hazard (most recent last) -- the
-    same rows Streamlit's track-record chart reads from
-    data/processed/{hazard}_predictions_log.csv (or
-    live_predictions_log.csv for thunderstorm).
+    Recent logged predictions for this hazard (most recent last).
     """
     cfg = _get_hazard_cfg(hazard)
     df = cfg["load_log"]()
@@ -127,9 +110,8 @@ def get_log(hazard: str, limit: int = 200):
         return {"rows": []}
 
     # Standard JSON has no representation for NaN/Infinity, and rows from
-    # earlier testing (Streamlit, CLI, manual CSV edits) may contain them
-    # in numeric columns -- sanitize to None (-> JSON null) rather than
-    # letting the encoder reject the whole response with a 500.
+    # earlier testing may contain them -- sanitize to None (-> JSON null)
+    # rather than letting the encoder reject the whole response.
     df = df.tail(limit).replace([np.inf, -np.inf], np.nan)
     df = df.astype(object).where(pd.notnull(df), None)
     return {"rows": df.to_dict(orient="records")}
@@ -140,9 +122,7 @@ def get_metadata(hazard: str):
     """
     The real metadata your training script wrote -- feature list, district
     list, sequence length, lead time, sample counts, train/val/test date
-    ranges, and per-district test metrics (accuracy/precision/recall/F1/AUC).
-    Read directly from models/model_metadata.json (or
-    cloudburst_model_metadata.json), never recomputed or estimated here.
+    ranges, and per-district test metrics.
     """
     cfg = _get_hazard_cfg(hazard)
     path = os.path.join(MODELS_DIR, cfg["metadata_filename"])
@@ -159,8 +139,7 @@ def get_metadata(hazard: str):
 @app.get("/api/config")
 def get_config():
     """
-    Real, static system parameters from configs/config.py -- used instead
-    of any invented "system spec" numbers.
+    Real, static system parameters from configs/config.py.
     """
     return {
         "region_name": REGION_NAME,
