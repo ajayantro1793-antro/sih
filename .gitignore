@@ -24,4 +24,5 @@ data/processed/*
 !data/processed/terrain_feature_names.npy
 !data/processed/terrain_grid.npy
 !data/processed/*_predictions_log.csv
+!data/processed/latest_live_ds.pkl
 *.log
